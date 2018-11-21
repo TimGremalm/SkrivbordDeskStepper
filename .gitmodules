@@ -1,0 +1,3 @@
+[submodule "components/esp32-vl53l0x"]
+	path = components/esp32-vl53l0x
+	url = https://github.com/kylehendricks/esp32-vl53l0x.git
