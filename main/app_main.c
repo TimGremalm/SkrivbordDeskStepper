@@ -38,6 +38,8 @@ static TimerHandle_t sensor_timer_h = NULL;
 
 static void read_sensor(TimerHandle_t timer_handle);
 
+uint32_t distance = 0;
+
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 	esp_mqtt_client_handle_t client = event->client;
 	int msg_id;
@@ -51,6 +53,9 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 			ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
 			msg_id = esp_mqtt_client_subscribe(client, "/Skrivbord/desk/setheight", 0);
+			ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+			msg_id = esp_mqtt_client_subscribe(client, "/Skrivbord/desk/getheight", 0);
 			ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
 			//msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
@@ -79,6 +84,12 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 			ESP_LOGI(TAG, "MQTT_EVENT_DATA");
 			printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 			printf("DATA=%.*s\r\n", event->data_len, event->data);
+			if (strncmp(event->topic, "/Skrivbord/desk/getheight", event->topic_len) == 0) {
+				ESP_LOGI(TAG, "Get height request, publish height");
+				char buf [100];
+				snprintf(buf, sizeof buf, "%imm", distance);
+				msg_id = esp_mqtt_client_publish(client, "/Skrivbord/desk/height", buf, 0, 1, 0);
+			}
 			break;
 		case MQTT_EVENT_ERROR:
 			ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -158,14 +169,14 @@ static void read_sensor(TimerHandle_t timer_handle) {
 	if (status != VL53L0X_ERROR_NONE) {
 		ESP_LOGI(TAG, "[APP] Couln't take reading");
 	}
-	uint32_t reading = measurement_data.RangeMilliMeter;
-	ESP_LOGI(TAG, "%imm", reading);
+	distance = measurement_data.RangeMilliMeter;
+	ESP_LOGI(TAG, "[APP] %imm", distance);
 }
 
 static void measure_timer_start(void) {
 	sensor_timer_h = xTimerCreate(
 		"reading_timer",
-		pdMS_TO_TICKS(500),
+		pdMS_TO_TICKS(300),
 		true,
 		NULL,
 		read_sensor
