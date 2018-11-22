@@ -1,3 +1,5 @@
+#define LOG_LOCAL_LEVEL ESP_LOG_INFO
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -20,10 +22,16 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 
-static const char *TAG = "MQTT_EXAMPLE";
+#include <vl53l0x_platform.h>
+#include "vl53l0x_helper.h"
+#include <driver/i2c.h>
+#include <vl53l0x_def.h>
 
-static EventGroupHandle_t wifi_event_group;
-const static int CONNECTED_BIT = BIT0;
+static const char *TAG = "SkrivbordDesk";
+
+static EventGroupHandle_t connection_event_group;
+const static int WIFI_CONNECTED_BIT = BIT0;
+static const int MQTT_CONNECTED_BIT = BIT1;
 
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
@@ -32,6 +40,8 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 	// your_context_t *context = event->context;
 	switch (event->event_id) {
 		case MQTT_EVENT_CONNECTED:
+			xEventGroupSetBits(connection_event_group, MQTT_CONNECTED_BIT);
+
 			ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
 			msg_id = esp_mqtt_client_publish(client, "/Skrivbord/desk/hello", "Desk started", 0, 1, 0);
 			ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
@@ -46,6 +56,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 			//ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
 			break;
 		case MQTT_EVENT_DISCONNECTED:
+			xEventGroupClearBits(connection_event_group, MQTT_CONNECTED_BIT);
 			ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
 			break;
 
@@ -78,12 +89,12 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event) {
 			esp_wifi_connect();
 			break;
 		case SYSTEM_EVENT_STA_GOT_IP:
-			xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+			xEventGroupSetBits(connection_event_group, WIFI_CONNECTED_BIT);
 
 			break;
 		case SYSTEM_EVENT_STA_DISCONNECTED:
 			esp_wifi_connect();
-			xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
+			xEventGroupClearBits(connection_event_group, WIFI_CONNECTED_BIT);
 			break;
 		default:
 			break;
@@ -93,7 +104,7 @@ static esp_err_t wifi_event_handler(void *ctx, system_event_t *event) {
 
 static void wifi_init(void) {
 	tcpip_adapter_init();
-	wifi_event_group = xEventGroupCreate();
+	connection_event_group = xEventGroupCreate();
 	ESP_ERROR_CHECK(esp_event_loop_init(wifi_event_handler, NULL));
 	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 	ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -109,7 +120,7 @@ static void wifi_init(void) {
 	ESP_LOGI(TAG, "start the WIFI SSID:[%s]", CONFIG_WIFI_SSID);
 	ESP_ERROR_CHECK(esp_wifi_start());
 	ESP_LOGI(TAG, "Waiting for wifi");
-	xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
+	xEventGroupWaitBits(connection_event_group, WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
 }
 
 static void mqtt_app_start(void) {
