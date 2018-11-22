@@ -33,6 +33,10 @@ static EventGroupHandle_t connection_event_group;
 const static int WIFI_CONNECTED_BIT = BIT0;
 static const int MQTT_CONNECTED_BIT = BIT1;
 
+static VL53L0X_Dev_t vl53l0x_dev;
+static TimerHandle_t sensor_timer_h = NULL;
+
+static void read_sensor(TimerHandle_t timer_handle);
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 	esp_mqtt_client_handle_t client = event->client;
@@ -133,8 +137,48 @@ static void mqtt_app_start(void) {
 	esp_mqtt_client_start(client);
 }
 
+static void i2c_master_init() {
+	i2c_port_t i2c_master_port = I2C_NUM_1;
+	i2c_config_t conf;
+	conf.mode = I2C_MODE_MASTER;
+	conf.sda_io_num = GPIO_NUM_21;
+	conf.sda_pullup_en = GPIO_PULLUP_DISABLE;
+	conf.scl_io_num = GPIO_NUM_22;
+	conf.scl_pullup_en = GPIO_PULLUP_DISABLE;
+	conf.master.clk_speed = 400000;
+
+	ESP_ERROR_CHECK(i2c_param_config(i2c_master_port, &conf));
+	ESP_ERROR_CHECK(i2c_driver_install(i2c_master_port, conf.mode, 0, 0, 0));
+}
+
+static void read_sensor(TimerHandle_t timer_handle) {
+	VL53L0X_Error status;
+	VL53L0X_RangingMeasurementData_t measurement_data;
+	status = take_reading(&vl53l0x_dev, &measurement_data);
+	if (status != VL53L0X_ERROR_NONE) {
+		ESP_LOGI(TAG, "[APP] Couln't take reading");
+	}
+	uint32_t reading = measurement_data.RangeMilliMeter;
+	ESP_LOGI(TAG, "%imm", reading);
+}
+
+static void measure_timer_start(void) {
+	sensor_timer_h = xTimerCreate(
+		"reading_timer",
+		pdMS_TO_TICKS(500),
+		true,
+		NULL,
+		read_sensor
+	);
+
+	if (!sensor_timer_h || (xTimerStart(sensor_timer_h, pdMS_TO_TICKS(1000)) == pdFAIL)) {
+		ESP_LOGE(TAG, "Failed to start timer");
+		//esp_restart();
+	}
+}
+
 void app_main() {
-	ESP_LOGI(TAG, "[APP] Startup..");
+	ESP_LOGI(TAG, "[APP] Startup Skrivbord Desk");
 	ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
 	ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
 
@@ -148,5 +192,17 @@ void app_main() {
 	nvs_flash_init();
 	wifi_init();
 	mqtt_app_start();
+
+	i2c_master_init();
+	vl53l0x_dev.i2c_port_num = I2C_NUM_1;
+	vl53l0x_dev.i2c_address = 0x29;
+
+	VL53L0X_Error status = init_vl53l0x(&vl53l0x_dev);
+	if (status != VL53L0X_ERROR_NONE) {
+		ESP_LOGE(TAG, "[APP] Couldn't init VL53L0X Sensor");
+		//esp_restart();
+	}
+
+	measure_timer_start();
 }
 
