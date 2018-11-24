@@ -15,6 +15,13 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 
+#include "esp_attr.h"
+#include "driver/mcpwm.h"
+#include "soc/mcpwm_reg.h"
+#include "soc/mcpwm_struct.h"
+
+#include "driver/gpio.h"
+
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
@@ -188,6 +195,33 @@ static void measure_timer_start(void) {
 	}
 }
 
+void gpio_init_high(int pin, int highlow) {
+	gpio_pad_select_gpio(pin);
+	gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+	gpio_set_level(pin, highlow);
+}
+
+#define STEPPERS_ENABLE 27
+#define STEPPERS_MS1 14
+#define STEPPERS_MS2 26
+#define STEPPERS_STEP 13
+#define STEPPER_LEFT_DIR 12
+#define STEPPER_RIGHT_DIR 25
+static void motor_control(void *arg) {
+	gpio_init_high(STEPPERS_MS1, 0);
+	gpio_init_high(STEPPERS_MS2, 0);
+	gpio_init_high(STEPPER_LEFT_DIR, 1);
+	gpio_init_high(STEPPER_RIGHT_DIR, 1);
+	gpio_init_high(STEPPERS_ENABLE, 0);
+	gpio_init_high(STEPPERS_STEP, 0);
+	while(1) {
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		gpio_set_level(STEPPERS_STEP, 1);
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		gpio_set_level(STEPPERS_STEP, 0);
+	}
+}
+
 void app_main() {
 	ESP_LOGI(TAG, "[APP] Startup Skrivbord Desk");
 	ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
@@ -215,5 +249,7 @@ void app_main() {
 	}
 
 	measure_timer_start();
+
+	xTaskCreate(motor_control, "motor_control", 4096, NULL, 5, NULL);
 }
 
