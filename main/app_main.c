@@ -45,7 +45,50 @@ static TimerHandle_t sensor_timer_h = NULL;
 
 static void read_sensor(TimerHandle_t timer_handle);
 
-uint32_t distance = 0;
+//States for measured desk height
+int distance = 0;
+static int deskCurrentHeight = 0;
+
+//Desk height
+#define DISTANCEOFFSET 550
+#define DESKHEIGHTMIN 600
+#define DESKHEIGHTMAX 1200
+
+//Desk raise lowering ramping speed
+#define RAMPSPEEDMIN = 50
+#define RAMPSPEEDMAX = 300
+
+typedef enum {
+	IDLE = 0,
+	MOVING_UP,
+	MOVING_DOWN,
+	OVERRIDE_UP,
+	OVERRIDE_DOWN,
+	OVERRIDE_TILT_LEFT,
+	OVERRIDE_TILT_RIGHT
+} DESKSTATES;
+static DESKSTATES deskState = IDLE;
+static int deskGoalHeight = 0;
+static int deskEndSwitchTop = 0;
+static int deskEndSwitchBottom = 0;
+
+void setDeskHeight(int height) {
+	//Validate height input, if not valid discard
+	if (height >= DESKHEIGHTMIN) {
+		if (height <= DESKHEIGHTMAX) {
+			//Only set goal height if state is idle or moving
+			switch (deskState) {
+				case IDLE:
+				case MOVING_UP:
+				case MOVING_DOWN:
+					deskGoalHeight = height;
+					break;
+				default:
+					break;
+			}
+		}
+	}
+}
 
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 	esp_mqtt_client_handle_t client = event->client;
@@ -64,12 +107,6 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 
 			msg_id = esp_mqtt_client_subscribe(client, "/Skrivbord/desk/getheight", 0);
 			ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-			//msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
-			//ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-			//msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
-			//ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
 			break;
 		case MQTT_EVENT_DISCONNECTED:
 			xEventGroupClearBits(connection_event_group, MQTT_CONNECTED_BIT);
@@ -91,11 +128,18 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event) {
 			ESP_LOGI(TAG, "MQTT_EVENT_DATA");
 			printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 			printf("DATA=%.*s\r\n", event->data_len, event->data);
+			char buf[100] = {0};
 			if (strncmp(event->topic, "/Skrivbord/desk/getheight", event->topic_len) == 0) {
 				ESP_LOGI(TAG, "Get height request, publish height");
-				char buf [100];
-				snprintf(buf, sizeof buf, "%imm", distance);
+				snprintf(buf, sizeof buf, "%imm", deskCurrentHeight);
 				msg_id = esp_mqtt_client_publish(client, "/Skrivbord/desk/height", buf, 0, 1, 0);
+			}
+			if (strncmp(event->topic, "/Skrivbord/desk/setheight", event->topic_len) == 0) {
+				if (event->topic_len < sizeof buf) {
+					memcpy(buf, event->data, event->data_len);
+					int distanceToSet = atoi(buf);
+					setDeskHeight(distanceToSet);
+				}
 			}
 			break;
 		case MQTT_EVENT_ERROR:
@@ -177,7 +221,10 @@ static void read_sensor(TimerHandle_t timer_handle) {
 		ESP_LOGI(TAG, "[APP] Couln't take reading");
 	}
 	distance = measurement_data.RangeMilliMeter;
-	ESP_LOGI(TAG, "[APP] %imm", distance);
+	//Sensor can only read up to 1.2m, if it reporting more it's out of range
+	if (distance < 1200) {
+		deskCurrentHeight = distance + DISTANCEOFFSET;
+	}
 }
 
 static void measure_timer_start(void) {
@@ -201,6 +248,7 @@ void gpio_init_high(int pin, int highlow) {
 	gpio_set_level(pin, highlow);
 }
 
+//Stepper driver pins for 2xA3967 drivers
 #define STEPPERS_ENABLE 27
 #define STEPPERS_MS1 14
 #define STEPPERS_MS2 26
@@ -222,6 +270,7 @@ static void motor_control(void *arg) {
 	pwm_config.duty_mode = MCPWM_DUTY_MODE_0;
 	mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);
 	mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 50);
+	mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
 	while(1) {
 		mcpwm_start(MCPWM_UNIT_0, MCPWM_TIMER_0);
 		mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, 50);
