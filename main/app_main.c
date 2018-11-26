@@ -468,8 +468,6 @@ void app_main() {
 	esp_log_level_set("OUTBOX", ESP_LOG_VERBOSE);
 
 	nvs_flash_init();
-	wifi_init();
-	mqtt_app_start();
 
 	i2c_master_init();
 	vl53l0x_dev.i2c_port_num = I2C_NUM_1;
@@ -484,5 +482,8 @@ void app_main() {
 	measure_timer_start();
 
 	xTaskCreate(motor_control, "motor_control", 4096, NULL, 5, NULL);
+
+	wifi_init();
+	mqtt_app_start();
 }
 
