@@ -46,7 +46,7 @@ static TimerHandle_t sensor_timer_h = NULL;
 static void read_sensor(TimerHandle_t timer_handle);
 
 //States for measured desk height
-int distance = 0;
+static int distance = 0;
 static int deskCurrentHeight = 0;
 
 //Desk height
@@ -55,8 +55,8 @@ static int deskCurrentHeight = 0;
 #define DESKHEIGHTMAX 1200
 
 //Desk raise lowering ramping speed
-#define RAMPSPEEDMIN = 50
-#define RAMPSPEEDMAX = 300
+#define RAMPSPEEDMIN 50
+#define RAMPSPEEDMAX 300
 
 typedef enum {
 	IDLE = 0,
@@ -71,6 +71,15 @@ static DESKSTATES deskState = IDLE;
 static int deskGoalHeight = 0;
 static int deskEndSwitchTop = 0;
 static int deskEndSwitchBottom = 0;
+
+typedef enum {
+	BTN_NO = 0,
+	BTN_UP,
+	BTN_DOWN,
+	BTN_TILT_LEFT,
+	BTN_TILT_RIGHT
+} BUTTONSTATES;
+BUTTONSTATES button = BTN_NO;
 
 void setDeskHeight(int height) {
 	//Validate height input, if not valid discard
@@ -242,26 +251,68 @@ static void measure_timer_start(void) {
 	}
 }
 
-void gpio_init_high(int pin, int highlow) {
+void gpio_init_state(int pin, int highlow) {
 	gpio_pad_select_gpio(pin);
 	gpio_set_direction(pin, GPIO_MODE_OUTPUT);
 	gpio_set_level(pin, highlow);
 }
 
+#define UP_PIN 35
+#define DOWN_PIN 34
+#define LEFT_PIN 32
+#define RIGHT_PIN 33
+#define END_SWITCH_TOP_PIN 18
+#define END_SWITCH_BOTTOM_PIN 19
+void readInputs() {
+	//Button inputs
+	button = BTN_NO;
+	if (!gpio_get_level(UP_PIN)) {
+		button = BTN_UP;
+	}
+	if (!gpio_get_level(DOWN_PIN)) {
+		button = BTN_DOWN;
+	}
+	if (!gpio_get_level(LEFT_PIN)) {
+		button = BTN_TILT_LEFT;
+	}
+	if (!gpio_get_level(RIGHT_PIN)) {
+		button = BTN_TILT_RIGHT;
+	}
+	//End switches
+	if (!gpio_get_level(END_SWITCH_TOP_PIN)) {
+		deskEndSwitchTop = 1;
+	} else {
+		deskEndSwitchTop = 0;
+	}
+	if (!gpio_get_level(END_SWITCH_BOTTOM_PIN)) {
+		deskEndSwitchBottom = 1;
+	} else {
+		deskEndSwitchBottom = 0;
+	}
+}
+
 //Stepper driver pins for 2xA3967 drivers
-#define STEPPERS_ENABLE 27
-#define STEPPERS_MS1 14
-#define STEPPERS_MS2 26
-#define STEPPERS_STEP 13
-#define STEPPER_LEFT_DIR 12
-#define STEPPER_RIGHT_DIR 25
+#define STEPPERS_ENABLE_PIN 27
+#define STEPPERS_MS1_PIN 14
+#define STEPPERS_MS2_PIN 26
+#define STEPPERS_STEP_PIN 13
+#define STEPPER_LEFT_DIR_PIN 12
+#define STEPPER_RIGHT_DIR_PIN 25
 static void motor_control(void *arg) {
-	gpio_init_high(STEPPERS_MS1, 1);
-	gpio_init_high(STEPPERS_MS2, 1);
-	gpio_init_high(STEPPER_LEFT_DIR, 1);
-	gpio_init_high(STEPPER_RIGHT_DIR, 1);
-	gpio_init_high(STEPPERS_ENABLE, 0);
-	mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, STEPPERS_STEP);
+	//Init pins
+	gpio_init_state(STEPPERS_MS1_PIN, 1);
+	gpio_init_state(STEPPERS_MS2_PIN, 1);
+	gpio_init_state(STEPPER_LEFT_DIR_PIN, 1);
+	gpio_init_state(STEPPER_RIGHT_DIR_PIN, 1);
+	gpio_init_state(STEPPERS_ENABLE_PIN, 0);
+	gpio_set_direction(UP_PIN, GPIO_MODE_INPUT);
+	gpio_set_direction(DOWN_PIN, GPIO_MODE_INPUT);
+	gpio_set_direction(LEFT_PIN, GPIO_MODE_INPUT);
+	gpio_set_direction(RIGHT_PIN, GPIO_MODE_INPUT);
+	gpio_set_direction(END_SWITCH_TOP_PIN, GPIO_MODE_INPUT);
+	gpio_set_direction(END_SWITCH_BOTTOM_PIN, GPIO_MODE_INPUT);
+	//Init pwm to steppers
+	mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, STEPPERS_STEP_PIN);
 	mcpwm_config_t pwm_config;
 	pwm_config.frequency = 20;
 	pwm_config.cmpr_a = 0;
@@ -271,14 +322,136 @@ static void motor_control(void *arg) {
 	mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);
 	mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 50);
 	mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
+	//States
+	int goalBefore = 0;
+	DESKSTATES deskStateBefore = 0;
+	BUTTONSTATES buttonBefore = 0;
+	int speed = 0;
+	int speedBefore = 0;
+	//Regulate motors
 	while(1) {
-		mcpwm_start(MCPWM_UNIT_0, MCPWM_TIMER_0);
-		mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, 50);
-		vTaskDelay(2000 / portTICK_PERIOD_MS);
-		mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, 150);
-		vTaskDelay(2000 / portTICK_PERIOD_MS);
-		mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
-		vTaskDelay(2000 / portTICK_PERIOD_MS);
+		//Have target height changed?
+		if (deskGoalHeight != goalBefore) {
+			int delta = deskGoalHeight - deskCurrentHeight;
+			if (delta < 0) {
+				//Go up
+				ESP_LOGI(TAG, "[APP] Request to raise desk to %d", deskGoalHeight);
+				deskState = MOVING_UP;
+			} else {
+				//Go down
+				ESP_LOGI(TAG, "[APP] Request to lower desk to %d", deskGoalHeight);
+				deskState = MOVING_DOWN;
+			}
+			goalBefore = deskGoalHeight;
+		}
+		//Check inputs for override
+		readInputs();
+		if (button != buttonBefore) {
+			switch (button) {
+				case BTN_UP:
+					deskState = OVERRIDE_UP;
+					break;
+				case BTN_DOWN:
+					deskState = OVERRIDE_DOWN;
+					break;
+				case BTN_TILT_LEFT:
+					deskState = OVERRIDE_TILT_LEFT;
+					break;
+				case BTN_TILT_RIGHT:
+					deskState = OVERRIDE_TILT_RIGHT;
+					break;
+				default:
+					deskState = IDLE;
+					break;
+			}
+		}
+		//Have hit limit switch
+		if (deskEndSwitchTop == 1) {
+			if (deskState==MOVING_UP || deskState==OVERRIDE_UP || deskState== OVERRIDE_TILT_LEFT || deskState==OVERRIDE_TILT_RIGHT) {
+				deskState = IDLE;
+				ESP_LOGI(TAG, "[APP] Can't raise if top limit switch is hit");
+			}
+		}
+		if (deskEndSwitchBottom == 1) {
+			if (deskState==MOVING_DOWN || deskState==OVERRIDE_DOWN || deskState== OVERRIDE_TILT_LEFT || deskState==OVERRIDE_TILT_RIGHT) {
+				deskState = IDLE;
+				ESP_LOGI(TAG, "[APP] Can't lower if bottom limit switch is hit");
+			}
+		}
+		//Have reached goal distance
+		if (deskState == MOVING_UP && deskCurrentHeight >= deskGoalHeight) {
+			deskState = IDLE;
+			ESP_LOGI(TAG, "[APP] At goal, stop");
+		}
+		if (deskState == MOVING_DOWN && deskCurrentHeight <= deskGoalHeight) {
+			deskState = IDLE;
+			ESP_LOGI(TAG, "[APP] At goal, stop");
+		}
+		//Change state of stepper driver
+		if (deskState != deskStateBefore) {
+			switch (deskState) {
+				case IDLE:
+					gpio_set_level(STEPPERS_ENABLE_PIN, 1);
+					gpio_set_level(STEPPER_LEFT_DIR_PIN, 0);
+					gpio_set_level(STEPPER_RIGHT_DIR_PIN, 0);
+					speed = 0;
+					ESP_LOGI(TAG, "[APP] Idle");
+					break;
+				case MOVING_UP:
+				case OVERRIDE_UP:
+					gpio_set_level(STEPPERS_ENABLE_PIN, 0);
+					gpio_set_level(STEPPER_LEFT_DIR_PIN, 1);
+					gpio_set_level(STEPPER_RIGHT_DIR_PIN, 1);
+					speed = RAMPSPEEDMIN;
+					ESP_LOGI(TAG, "[APP] Raise");
+					break;
+				case MOVING_DOWN:
+				case OVERRIDE_DOWN:
+					gpio_set_level(STEPPERS_ENABLE_PIN, 0);
+					gpio_set_level(STEPPER_LEFT_DIR_PIN, 0);
+					gpio_set_level(STEPPER_RIGHT_DIR_PIN, 0);
+					speed = RAMPSPEEDMIN;
+					ESP_LOGI(TAG, "[APP] Lower");
+					break;
+				case OVERRIDE_TILT_LEFT:
+					gpio_set_level(STEPPERS_ENABLE_PIN, 0);
+					gpio_set_level(STEPPER_LEFT_DIR_PIN, 1);
+					gpio_set_level(STEPPER_RIGHT_DIR_PIN, 0);
+					speed = RAMPSPEEDMIN;
+					ESP_LOGI(TAG, "[APP] Tilt left");
+					break;
+				case OVERRIDE_TILT_RIGHT:
+					gpio_set_level(STEPPERS_ENABLE_PIN, 0);
+					gpio_set_level(STEPPER_LEFT_DIR_PIN, 0);
+					gpio_set_level(STEPPER_RIGHT_DIR_PIN, 1);
+					speed = RAMPSPEEDMIN;
+					ESP_LOGI(TAG, "[APP] Tilt right");
+					break;
+			}
+		}
+		//Ramp motor
+		if (deskState != IDLE ) {
+			if (speed < RAMPSPEEDMAX) {
+				speed += 1;
+			}
+			if (speed != speedBefore) {
+				mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, speed);
+				ESP_LOGI(TAG, "[APP] Speed: %d", speed);
+			}
+		}
+		if (deskState != deskStateBefore) {
+			if (deskState == IDLE) {
+				mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
+				ESP_LOGI(TAG, "[APP] Stop PWM");
+			} else {
+				mcpwm_start(MCPWM_UNIT_0, MCPWM_TIMER_0);
+				ESP_LOGI(TAG, "[APP] Start PWM");
+			}
+		}
+		deskStateBefore = deskState;
+		buttonBefore = button;
+		speedBefore = speed;
+		vTaskDelay(100 / portTICK_PERIOD_MS);
 	}
 }
 
