@@ -56,7 +56,7 @@ static int deskCurrentHeight = 0;
 
 //Desk raise lowering ramping speed
 #define RAMPSPEEDMIN 50
-#define RAMPSPEEDMAX 300
+#define RAMPSPEEDMAX 4000
 
 typedef enum {
 	IDLE = 0,
@@ -333,7 +333,7 @@ static void motor_control(void *arg) {
 		//Have target height changed?
 		if (deskGoalHeight != goalBefore) {
 			int delta = deskGoalHeight - deskCurrentHeight;
-			if (delta < 0) {
+			if (delta > 0) {
 				//Go up
 				ESP_LOGI(TAG, "[APP] Request to raise desk to %d", deskGoalHeight);
 				deskState = MOVING_UP;
@@ -432,7 +432,7 @@ static void motor_control(void *arg) {
 		//Ramp motor
 		if (deskState != IDLE ) {
 			if (speed < RAMPSPEEDMAX) {
-				speed += 1;
+				speed += 50;
 			}
 			if (speed != speedBefore) {
 				mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, speed);
